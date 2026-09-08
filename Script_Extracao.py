@@ -13,32 +13,55 @@ execucoes = 0
 
 def coletarMetricas():
     # 1. Identificação do Servidor 
-    hostname_atual = socket.gethostname()
+    hostnameAtual = socket.gethostname()
+    timestampAtual = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    # MÉTRICAS SDV (CPU + RAM)
+
+    usoCpuGeral = psutil.cpu_percent(interval=1)
+    usoCpuCores = str(psutil.cpu_percent(percpu=True)) 
     
-    uso_ram = psutil.virtual_memory().percent
-    uso_cpu = psutil.cpu_percent(interval=1)
-    uso_disco = psutil.disk_usage('/').percent
-    timestamp_atual = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    memoriaVirtual = psutil.virtual_memory()
+    usoRam = memoriaVirtual.percent
+    
+    memoriaSwap = psutil.swap_memory()
+    swapIn = memoriaSwap.sin
+    swapOut = memoriaSwap.sout
 
+    # MÉTRICAS SPA (RAM + Disco)
 
+    usoDisco = psutil.disk_usage('/').percent
+    ioDisco = psutil.disk_io_counters()
+    discoRead = ioDisco.read_bytes if ioDisco else 0
+    discoWrite = ioDisco.write_bytes if ioDisco else 0
+
+    # MÉTRICAS AIS (Disponibilidade de Processo)
+
+    # Dataframe
     resultados = {
-        "TimeStamp": [timestamp_atual],
-        "Hostname": [hostname_atual],
-        "UsoRAM": [uso_ram],
-        "UsoCPU": [uso_cpu],
-        "UsoDisco": [uso_disco]
+        "TimeStamp": [timestampAtual],
+        "Hostname": [hostnameAtual],
+        # SDV
+        "UsoCPU_Geral": [usoCpuGeral],
+        "UsoCPU_Por_Core": [usoCpuCores],
+        "UsoRAM": [usoRam],
+        "Swap_In": [swapIn],
+        "Swap_Out": [swapOut],
+        # SPA
+        "UsoDisco": [usoDisco],
+        "Disco_Read_Bytes": [discoRead],
+        "Disco_Write_Bytes": [discoWrite],
     }
 
-    # Criação do DataFrame
-    df_Novo = pnd.DataFrame(resultados)
 
+    df_Novo = pnd.DataFrame(resultados)
     caminhoCSV = "./csvs/dados.csv"
     
-    # Cria a pasta automaticamente caso ela não exista
+    # Cria o diretório caso não exista
     os.makedirs(os.path.dirname(caminhoCSV), exist_ok=True)
     arquivoExiste = os.path.exists(caminhoCSV)
 
-    # Exportação usando o Pandas em modo append
+    # Exportação
     df_Novo.to_csv(
         caminhoCSV,
         sep=';',
@@ -47,15 +70,17 @@ def coletarMetricas():
         header=not arquivoExiste,
         encoding='utf-8'
     )
+    
     global execucoes
     execucoes += 1
 
-    print(f"[{timestamp_atual}] Coleta salva com sucesso | Servidor: {hostname_atual}")
+    print(f"[{timestampAtual}] Coleta salva | CPU: {usoCpuGeral}% | RAM: {usoRam}% | Disco: {usoDisco}% | Swap Ativo: {swapIn > 0}")
 
 if __name__ == "__main__":
     while (execucoes < 100):
-        time.sleep(5)
+        time.sleep(4) 
         coletarMetricas()
+        
     print("""\n========================================\n
             Encerrando Escrita
             \n========================================\n""")
