@@ -28,29 +28,26 @@ def coletarMetricas():
     swapIn = memoriaSwap.sin
     swapOut = memoriaSwap.sout
 
-    # MÉTRICAS SPA (RAM + Disco)
+    # MÉTRICAS SPA E AIS (RAM + Disco)
 
-    usoDisco = psutil.disk_usage('/').percent
+    caminhoDisco = 'C:\\' if os.name == 'nt' else '/'
+    usoDisco = psutil.disk_usage(caminhoDisco).percent
     ioDisco = psutil.disk_io_counters()
     discoRead = ioDisco.read_bytes if ioDisco else 0
     discoWrite = ioDisco.write_bytes if ioDisco else 0
-
-    # MÉTRICAS AIS (Disponibilidade de Processo)
 
     # Dataframe
     resultados = {
         "TimeStamp": [timestampAtual],
         "Hostname": [hostnameAtual],
-        # SDV
         "UsoCPU_Geral": [usoCpuGeral],
         "UsoCPU_Por_Core": [usoCpuCores],
         "UsoRAM": [usoRam],
         "Swap_In": [swapIn],
         "Swap_Out": [swapOut],
-        # SPA
         "UsoDisco": [usoDisco],
         "Disco_Read_Bytes": [discoRead],
-        "Disco_Write_Bytes": [discoWrite],
+        "Disco_Write_Bytes": [discoWrite]
     }
 
 
