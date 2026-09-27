@@ -1,0 +1,3 @@
+pandas
+psutil
+mysql-connector-python
