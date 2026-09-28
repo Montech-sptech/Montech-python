@@ -1,3 +1,4 @@
 pandas
 psutil
 mysql-connector-python
+dotenv

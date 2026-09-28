@@ -6,15 +6,18 @@ import socket
 import time
 import uuid
 import mysql.connector
+from dotenv import load_dotenv
+
+load_dotenv()
 
 def conectarBanco():
     while True:
         try:
             conexao = mysql.connector.connect(
-                host="localhost",  # Em produção, use o IP da VM do MySQL.
-                user="seuUsuario",
-                password="suaSenha",
-                database="montech",
+                host=os.getenv("DB_HOST"),
+                user=os.getenv("DB_USER"),
+                password=os.getenv("DB_PASSWORD"),
+                database=os.getenv("DB_NAME"),
             )
             print("Conexão bem-sucedida ao banco de dados MySQL!")
             return conexao
