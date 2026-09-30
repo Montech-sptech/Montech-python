@@ -51,26 +51,26 @@ while True:
         print("Email e senha não podem ficar vazios ou conter apenas espaços.")
         continue
 
-    cursor = None
+    cursorAutenticacao = None
 
     try:
         if not conexao.is_connected():
             conexao.reconnect(attempts=3, delay=2)
 
-        cursor = conexao.cursor(buffered=True)
-        cursor.execute(
+        cursorAutenticacao = conexao.cursor(buffered=True)
+        cursorAutenticacao.execute(
             "SELECT idUsuario, fkEmpresa FROM usuario WHERE email = %s AND senha = %s",
             (email, senha),
         )
-        usuario = cursor.fetchone()
+        usuario = cursorAutenticacao.fetchone()
     except mysql.connector.Error as erro:
         print(f"Erro no banco de dados durante o login: {erro}")
         conexao = conectarBanco()
         continue
     finally:
-        if cursor is not None:
+        if cursorAutenticacao is not None:
             try:
-                cursor.close()
+                cursorAutenticacao.close()
             except mysql.connector.Error:
                 pass
 
@@ -80,6 +80,68 @@ while True:
 
     print("Falha na autenticação. Verifique o email e a senha.")
     os.system("cls" if os.name == "nt" else "clear")
+
+while True:
+
+    token_servidor = input("Digite o Token do servidor que deseja monitorar: ").strip()
+
+    if not token_servidor:
+            print("O Token não pode ficar vazio.")
+            continue
+
+    cursorToken = None
+    
+    try:
+        if not conexao.is_connected():
+            conexao.reconnect(attempts=3, delay=2)
+
+        cursorToken = conexao.cursor(buffered=True)
+        cursorToken.execute(
+            "SELECT idServidor FROM servidor WHERE token = %s",
+            (token_servidor),
+        )
+        servidor = cursorToken.fetchone()
+    except mysql.connector.Error as erro:
+        print(f"Erro no banco de dados durante o login: {erro}")
+        conexao = conectarBanco()
+        continue
+    finally:
+        if cursorToken is not None:
+            try:
+                cursorToken.close()
+            except mysql.connector.Error:
+                pass
+
+    if servidor is not None:
+        print("Servidor identificado com sucesso!")
+        cursorComponente = None
+        try:
+            if not conexao.is_connected():
+                conexao.reconnect(attempts=3, delay=2)
+    
+            cursorComponente = conexao.cursor(buffered=True)
+            cursorComponente.execute(
+                "SELECT c.codigo FROM componente c JOIN servidorComponente sc ON sc.fkComponente = c.idComponente JOIN servidor s ON s.idServidor = sc.fkServidor WHERE idServidor = %s",
+                (servidor),
+            )
+            componentes = cursorComponente.fetchone()
+        except mysql.connector.Error as erro:
+            print(f"Erro no banco de dados durante o login: {erro}")
+            conexao = conectarBanco()
+            continue
+        finally:
+            if cursorComponente is not None:
+                try:
+                    cursorComponente.close()
+                except mysql.connector.Error:
+                    pass
+        if componentes is not None:
+                print("Componentes recolhidos com sucesso!")
+                break
+        
+        os.system("cls" if os.name == "nt" else "clear")
+        print("Falha verificação dos componentes. Retorno nulo.")
+    
 
 
 if conexao.is_connected():
