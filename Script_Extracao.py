@@ -96,10 +96,10 @@ while True:
         cursorAutenticacao = conexao.cursor(buffered=True)
         # Os %s são parâmetros: o driver escapa os valores e evita SQL Injection
         cursorAutenticacao.execute(
-            "SELECT idUsuario, fkEmpresa FROM usuario WHERE email = %s AND senha = %s",
+            "SELECT idUsuario, fkAeroporto FROM usuario WHERE email = %s AND senha = %s",
             (email, senha),
         )
-        # Retorna uma tupla (idUsuario, fkEmpresa) ou None se não achou ninguém
+        # Retorna uma tupla (idUsuario, fkAeroporto) ou None se não achou ninguém
         usuario = cursorAutenticacao.fetchone()
     except mysql.connector.Error as erro:
         # Erro de banco: reconecta e volta pro começo do loop
@@ -332,7 +332,7 @@ if conexao.is_connected():
         resultados = {
         "TimeStamp": [datetime.now().strftime("%Y-%m-%d %H:%M:%S")],
         "Hostname": [socket.gethostname()],
-        "IdEmpresa": [usuario[1]],  # fkEmpresa do usuário logado
+        "IdAeroporto": [usuario[1]],  # fkAeroporto do usuário logado
     }
 
         # Colunas dinâmicas: uma para cada componente vindo do banco
