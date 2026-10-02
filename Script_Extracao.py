@@ -331,7 +331,6 @@ if conexao.is_connected():
         # porque o DataFrame espera colunas com listas (uma linha = 1 elemento)
         resultados = {
         "TimeStamp": [datetime.now().strftime("%Y-%m-%d %H:%M:%S")],
-        "Hostname": [socket.gethostname()],
         "IdAeroporto": [usuario[1]],  # fkAeroporto do usuário logado
     }
 
