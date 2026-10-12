@@ -4,10 +4,12 @@
 #   1. Conecta ao banco MySQL
 #   2. Faz login do usuário (email + senha)
 #   3. Pede o token do servidor e busca os componentes dele no banco
-#   4. Em loop, executa o "codigo" de cada componente e grava uma linha no CSV
+#   4. O Organizador (executado UMA vez) descobre empresa/aeroporto do token,
+#      cria bronze/<empresa>/<aeroporto>/ se não existir e devolve esse caminho
+#   5. Em loop, executa o "codigo" de cada componente e grava uma linha no CSV,
+#      direto dentro da pasta devolvida pelo Organizador
 #
-# Os trechos que mudaram nesta versão estão marcados com
-# "NOVO:" (código que não existia) ou "ALTERADO:" (código que já existia e mudou).
+# IMPORTANTE: este arquivo e o Organizador.py precisam ficar na MESMA pasta.
 # ============================================================
 
 import pandas as pnd                 # monta o DataFrame e exporta para CSV
@@ -18,9 +20,14 @@ import socket                        # pega o hostname da máquina. Também usad
 import time                          # sleep e relógio monotônico
 import mysql.connector               # conexão com o MySQL
 from dotenv import load_dotenv       # lê o arquivo .env
+from Organizador import organizar, PASTA_BRONZE  # cria bronze/<empresa>/<aeroporto>/ e devolve o caminho
 
 # Carrega as credenciais do banco (DB_HOST, DB_USER, DB_PASSWORD, DB_NAME) do .env
 load_dotenv()
+
+# Pasta onde os CSVs são gravados. Começa na raiz "bronze" (fallback) e é redefinida
+# na Etapa 3 com o caminho bronze/<empresa>/<aeroporto>/ devolvido pelo Organizador.
+PASTA_CSVS = PASTA_BRONZE
 
 
 def conectarBanco():
@@ -63,13 +70,13 @@ print("Para acessar o sistema, por favor, faça login com seu email e senha.\n")
 # Repete até o usuário acertar email e senha.
 # ============================================================
 while True:
-    # ALTERADO: os inputs agora ficam dentro de um try para tratar o Ctrl+C.
-    # Antes, apertar Ctrl+C no login estourava um traceback (KeyboardInterrupt).
+    # Os inputs ficam dentro de um try para tratar o Ctrl+C.
+    # Sem isso, apertar Ctrl+C no login estourava um traceback (KeyboardInterrupt).
     try:
         email = input("Digite o email: ").strip()
         senha = input("Digite a senha: ").strip()
     except KeyboardInterrupt:
-        # NOVO: encerra o programa de forma limpa quando o usuário cancela com Ctrl+C
+        # Encerra o programa de forma limpa quando o usuário cancela com Ctrl+C
         print("\nLogin cancelado. Encerrando o programa.")
         try:
             # Fecha a conexão com o banco antes de sair, se ainda estiver aberta
@@ -129,11 +136,11 @@ while True:
 # ============================================================
 while True:
 
-    # ALTERADO: mesmo tratamento de Ctrl+C da etapa de login, agora no input do token
+    # Mesmo tratamento de Ctrl+C da etapa de login, agora no input do token
     try:
         tokenServidor = input("\nDigite o Token do servidor que deseja monitorar: ").strip()
     except KeyboardInterrupt:
-        # NOVO: cancela com mensagem limpa, fecha a conexão e sai
+        # Cancela com mensagem limpa, fecha a conexão e sai
         print("\nEntrada do token cancelada. Encerrando o programa.")
         try:
             if conexao.is_connected():
@@ -143,12 +150,12 @@ while True:
         raise SystemExit(0)
 
     if not tokenServidor:
-            print("\nO Token não pode ficar vazio.")
-            continue
+        print("\nO Token não pode ficar vazio.")
+        continue
 
     cursorToken = None
     deveReconectar = False  # flag: só reconecta depois do finally, para não misturar com o fechamento do cursor
-    
+
     try:
         if not conexao.is_connected():
             conexao.reconnect(attempts=3, delay=2)
@@ -183,22 +190,21 @@ while True:
         try:
             if not conexao.is_connected():
                 conexao.reconnect(attempts=3, delay=2)
-    
+
             cursorComponente = conexao.cursor(buffered=True)
             # Junta componente -> servidorComponente -> servidor para pegar só os componentes
             # vinculados a esse servidor.
             # nomeCodigo = nome da coluna no CSV | codigo = expressão Python que gera o valor
-            # ATENÇÃO: (servidor) NÃO é uma tupla, é só um parêntese. Como `servidor` já é uma
-            # tupla (idServidor,) o driver pode até aceitar, mas o correto e mais seguro
-            # é (servidor[0],). (A nova função buscarComponentesAtualizados já usa a forma correta.)
+            # ALTERADO: (servidor) NÃO era uma tupla, só um parêntese. Agora usa (servidor[0],),
+            # que é a forma correta, e s.idServidor para evitar ambiguidade na coluna.
             cursorComponente.execute(
-                "SELECT c.nomeCodigo, c.codigo FROM componente c JOIN servidorComponente sc ON sc.fkComponente = c.idComponente JOIN servidor s ON s.idServidor = sc.fkServidor WHERE idServidor = %s",
-                (servidor),
+                "SELECT c.nomeCodigo, c.codigo FROM componente c JOIN servidorComponente sc ON sc.fkComponente = c.idComponente JOIN servidor s ON s.idServidor = sc.fkServidor WHERE s.idServidor = %s",
+                (servidor[0],),
             )
             # Lista de tuplas: [(nomeCodigo, codigo), (nomeCodigo, codigo), ...]
             componentes = cursorComponente.fetchall()
         except mysql.connector.Error as erro:
-            print(f"\nErro no banco de dados durante o login: {erro}")
+            print(f"\nErro no banco de dados ao buscar os componentes: {erro}")
             conexao = conectarBanco()
             continue
         finally:
@@ -210,23 +216,31 @@ while True:
         # fetchall() devolve lista vazia (não None) quando não há linhas,
         # então esse if quase sempre é verdadeiro
         if componentes is not None:
-                print("\nComponentes recolhidos com sucesso!")
-                break  # sai do loop do token e segue para a coleta
-        
+            print("\nComponentes recolhidos com sucesso!")
+            break  # sai do loop do token e segue para a coleta
+
         # (só chega aqui se componentes for None)
         os.system("cls" if os.name == "nt" else "clear")
         print("Falha verificação dos componentes. Retorno nulo.")
-    
+    else:
+        # ALTERADO: antes, token inexistente voltava ao loop sem nenhuma mensagem
+        print("\nToken não encontrado. Verifique e tente novamente.")
 
 
 # ============================================================
 # ETAPA 3: COLETA DE MÉTRICAS
 # ============================================================
 if conexao.is_connected():
+    # O Organizador roda UMA única vez: cria bronze/<empresa>/<aeroporto>/ (e a raiz
+    # "bronze", se não existir) e devolve o caminho. Se o token não tiver
+    # aeroporto/empresa vinculados, grava direto em bronze/.
+    PASTA_CSVS = organizar(tokenServidor, conexao) or PASTA_BRONZE
+
     os.system("cls" if os.name == "nt" else "clear")
     print("""\n========================================\n
                 Iniciando Escrita
                 \n========================================\n""")
+    print(f"Gravando em: {PASTA_CSVS}\n")
 
     execucoes = 0                          # contador de coletas feitas
     intervaloCSVSegundos = 2 * 60 * 60     # a cada 2 horas começa um CSV novo
@@ -276,8 +290,6 @@ if conexao.is_connected():
                 conexao.reconnect(attempts=3, delay=2)
 
             cursorAtualizacao = conexao.cursor(buffered=True)
-            # Mesma query da Etapa 2, mas já com a forma correta: s.idServidor
-            # (sem ambiguidade) e (servidor[0],) como tupla de 1 elemento
             cursorAtualizacao.execute(
                 "SELECT c.nomeCodigo, c.codigo FROM componente c "
                 "JOIN servidorComponente sc ON sc.fkComponente = c.idComponente "
@@ -298,13 +310,12 @@ if conexao.is_connected():
                     pass
 
     def coletarMetricas():
-        # Agora esta função também reatribui `componentes`,
+        # Esta função também reatribui `componentes`,
         # então precisa declarar como global (senão criaria uma variável local)
         global componentes
 
-        # A lógica de rotação do CSV subiu para o começo da função
-        # (antes ficava depois de montar o DataFrame). Motivo: decidir primeiro se
-        # vai começar um arquivo novo, para atualizar os componentes ANTES de coletar.
+        # Decide primeiro se vai começar um arquivo novo, para atualizar
+        # os componentes ANTES de coletar.
         # novoArquivo = True na primeira coleta OU quando passaram 2h desde o início do CSV atual
         agoraMonotonico = time.monotonic()
         novoArquivo = (
@@ -325,14 +336,15 @@ if conexao.is_connected():
             estadoCSV["inicio"] = agoraMonotonico
             # Nome: token-AAAA-MM-DD_HHh.csv (sem ":" para funcionar no Windows)
             nomeArquivo = f"{tokenServidor}-{datetime.now().strftime('%Y-%m-%d_%H')}h.csv"
-            estadoCSV["caminho"] = os.path.join("csvs", nomeArquivo)
+            # O CSV é criado direto na pasta bronze/<empresa>/<aeroporto>/
+            estadoCSV["caminho"] = os.path.join(PASTA_CSVS, nomeArquivo)
 
         # Colunas fixas (sempre existem). Cada valor é uma lista de 1 item
         # porque o DataFrame espera colunas com listas (uma linha = 1 elemento)
         resultados = {
-        "TimeStamp": [datetime.now().strftime("%Y-%m-%d %H:%M:%S")],
-        "IdAeroporto": [usuario[1]],  # fkAeroporto do usuário logado
-    }
+            "TimeStamp": [datetime.now().strftime("%Y-%m-%d %H:%M:%S")],
+            "IdAeroporto": [usuario[1]],  # fkAeroporto do usuário logado
+        }
 
         # Colunas dinâmicas: uma para cada componente vindo do banco
         for nomeCodigo, codigo in componentes:
@@ -350,13 +362,12 @@ if conexao.is_connected():
             # nomeCodigo vira o nome da coluna no CSV
             resultados[nomeCodigo] = [valor]
 
-
         # Transforma o dicionário em um DataFrame de 1 linha
         df_Novo = pnd.DataFrame(resultados)
 
-        # Ele só lê o caminho já definido no bloco de rotação acima
+        # Só lê o caminho já definido no bloco de rotação acima
         caminhoCSV = estadoCSV["caminho"]
-        
+
         # Cria o diretório caso não exista
         os.makedirs(os.path.dirname(caminhoCSV), exist_ok=True)
         # Se o arquivo já existe, não escreve o cabeçalho de novo
@@ -371,11 +382,10 @@ if conexao.is_connected():
             header=not arquivoExiste,
             encoding='utf-8'
         )
-        
+
         # "global" porque execucoes é uma variável do módulo e aqui ela é reatribuída
         global execucoes
         execucoes += 1
-
 
 
     if __name__ == "__main__":
