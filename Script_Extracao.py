@@ -192,7 +192,7 @@ while True:
             # tupla (idServidor,) o driver pode até aceitar, mas o correto e mais seguro
             # é (servidor[0],). (A nova função buscarComponentesAtualizados já usa a forma correta.)
             cursorComponente.execute(
-                "SELECT c.nomeCodigo, c.codigo FROM componente c JOIN servidorComponente sc ON sc.fkComponente = c.idComponente JOIN servidor s ON s.idServidor = sc.fkServidor WHERE idServidor = %s",
+                "SELECT c.nomeCodigo, c.codigo FROM componente c JOIN servidorcomponente sc ON sc.fkComponente = c.idComponente JOIN servidor s ON s.idServidor = sc.fkServidor WHERE idServidor = %s",
                 (servidor),
             )
             # Lista de tuplas: [(nomeCodigo, codigo), (nomeCodigo, codigo), ...]
@@ -280,7 +280,7 @@ if conexao.is_connected():
             # (sem ambiguidade) e (servidor[0],) como tupla de 1 elemento
             cursorAtualizacao.execute(
                 "SELECT c.nomeCodigo, c.codigo FROM componente c "
-                "JOIN servidorComponente sc ON sc.fkComponente = c.idComponente "
+                "JOIN servidorcomponente sc ON sc.fkComponente = c.idComponente "
                 "JOIN servidor s ON s.idServidor = sc.fkServidor "
                 "WHERE s.idServidor = %s",
                 (servidor[0],),
