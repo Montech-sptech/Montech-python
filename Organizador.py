@@ -1,18 +1,23 @@
 # ============================================================
-# Organizador de pastas por Empresa / Aeroporto  (camada "bronze")
+# Organizador de pastas por Empresa / Aeroporto  (camadas bronze, prata e ouro)
 #
-# Fluxo (executado UMA vez por token, chamado pelo Script_Extracao.py):
-#   1. Garante que a pasta raiz "bronze" existe (cria se não existir)
-#   2. Consulta no MySQL: token do servidor -> aeroporto -> empresa
-#   3. Cria bronze/<empresa>/<aeroporto>/ se não existir
-#   4. Devolve o caminho dessa pasta para o coletor gravar os CSVs nela
+# Fluxo (executado UMA vez por token):
+#   1. Consulta no MySQL: token do servidor -> aeroporto -> empresa
+#   2. Garante <camada>/<empresa>/<aeroporto>/ (cria raiz e subpastas se não existirem)
+#   3. Devolve o(s) caminho(s) para quem chamou (coletor ou ETL)
 #
-# Uso pelo coletor:
+# Uso pelo coletor (Script_Extracao.py) - NADA muda:
 #   from Organizador import organizar
-#   pasta = organizar(token, conexao)
+#   pasta = organizar(token, conexao)              # bronze/<empresa>/<aeroporto>/
 #
-# Uso manual (só cria as pastas e mostra o caminho):
-#   python Organizador.py --token ABC
+# Uso pela ETL (etl_1.py):
+#   from Organizador import organizar_camadas
+#   destino = organizar_camadas(token, conexao)
+#   destino["bronze"], destino["prata"], destino["ouro"], destino["idAeroporto"]
+#
+# Uso manual:
+#   python Organizador.py --token ABC                    (só bronze)
+#   python Organizador.py --token ABC --camada todas
 # ============================================================
 
 import argparse
@@ -24,10 +29,16 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Raiz = pasta onde este script está salvo (independe de onde ele é executado)
+# Raiz = pasta onde este script está salvo (independe de onde ele é executado).
+# Para simular um bucket, basta apontar PASTA_DATALAKE para outra pasta (ex.: "bucket_simulacao").
 PASTA_RAIZ = os.path.dirname(os.path.abspath(__file__))
-# Pasta raiz de todos os dados: bronze/<empresa>/<aeroporto>/
-PASTA_BRONZE = os.path.join(PASTA_RAIZ, "bronze")
+PASTA_DATALAKE = PASTA_RAIZ
+
+CAMADAS = ("bronze", "prata", "ouro")
+PASTAS_CAMADAS = {camada: os.path.join(PASTA_DATALAKE, camada) for camada in CAMADAS}
+
+# Mantido porque o Script_Extracao.py importa este nome
+PASTA_BRONZE = PASTAS_CAMADAS["bronze"]
 
 # ------------------------------------------------------------
 # ATENÇÃO: ajuste os nomes de tabelas/colunas abaixo ao seu schema.
@@ -36,7 +47,7 @@ PASTA_BRONZE = os.path.join(PASTA_RAIZ, "bronze")
 #            empresa(idEmpresa, razaoSocial)
 # ------------------------------------------------------------
 SQL_DESTINO = """
-    SELECT e.razaoSocial, a.nome
+    SELECT e.razaoSocial, a.nome, a.idAeroporto
     FROM servidor s
     JOIN aeroporto a ON a.idAeroporto = s.fkAeroporto
     JOIN empresa e   ON e.idEmpresa   = a.fkEmpresa
@@ -65,7 +76,7 @@ def nome_seguro(nome):
 
 
 def buscar_destino(conexao, token):
-    """Retorna (empresa, aeroporto) do token, ou None se não existir/der erro."""
+    """Retorna (empresa, aeroporto, idAeroporto) do token, ou None se não existir/der erro."""
     cursor = None
     try:
         if not conexao.is_connected():
@@ -83,23 +94,14 @@ def buscar_destino(conexao, token):
             except mysql.connector.Error:
                 pass
 
-    return (linha[0], linha[1]) if linha is not None else None
+    return (linha[0], linha[1], linha[2]) if linha is not None else None
 
 
-def organizar(token, conexao=None):
+def resolver_destino(token, conexao=None):
     """
-    Garante a estrutura bronze/<empresa>/<aeroporto>/ para o token e devolve
-    o caminho da pasta. Retorna None se o token não tiver aeroporto/empresa
-    vinculados ou se o banco falhar (a pasta bronze é criada de qualquer forma).
-
-    conexao: conexão MySQL já aberta (a do coletor). Se None, abre e fecha uma própria.
+    Descobre (empresa, aeroporto, idAeroporto) do token.
+    conexao: conexão MySQL já aberta. Se None, abre e fecha uma própria.
     """
-    # 1) Pasta raiz "bronze": cria se não existir
-    if not os.path.isdir(PASTA_BRONZE):
-        os.makedirs(PASTA_BRONZE)
-        print(f"Pasta raiz criada: {PASTA_BRONZE}")
-
-    # 2) Descobre empresa/aeroporto do token
     conexaoPropria = conexao is None
     if conexaoPropria:
         conexao = conectar_banco()
@@ -107,7 +109,7 @@ def organizar(token, conexao=None):
             return None
 
     try:
-        destino = buscar_destino(conexao, token)
+        return buscar_destino(conexao, token)
     finally:
         if conexaoPropria:
             try:
@@ -115,28 +117,81 @@ def organizar(token, conexao=None):
             except mysql.connector.Error:
                 pass
 
+
+def montar_pasta(camada, empresa, aeroporto):
+    """Cria (se preciso) <camada>/<empresa>/<aeroporto>/ e devolve o caminho."""
+    raiz = PASTAS_CAMADAS[camada]
+    if not os.path.isdir(raiz):
+        os.makedirs(raiz)
+        print(f"Pasta raiz criada: {raiz}")
+
+    pasta = os.path.join(raiz, nome_seguro(empresa), nome_seguro(aeroporto))
+    os.makedirs(pasta, exist_ok=True)
+    return pasta
+
+
+def organizar(token, conexao=None, camada="bronze"):
+    """
+    Garante <camada>/<empresa>/<aeroporto>/ para o token e devolve o caminho.
+    Retorna None se o token não tiver aeroporto/empresa vinculados ou se o banco falhar
+    (a pasta raiz da camada é criada de qualquer forma).
+
+    Chamadas antigas (organizar(token, conexao)) continuam funcionando: camada padrão = bronze.
+    """
+    if camada not in PASTAS_CAMADAS:
+        raise ValueError(f"Camada inválida: '{camada}'. Use uma de {CAMADAS}.")
+
+    os.makedirs(PASTAS_CAMADAS[camada], exist_ok=True)
+
+    destino = resolver_destino(token, conexao)
     if destino is None:
         print(f"Token '{token}' sem servidor/aeroporto/empresa vinculados.")
         return None
 
-    # 3) Cria bronze/<empresa>/<aeroporto>/ se necessário
-    empresa, aeroporto = destino
-    pastaDestino = os.path.join(PASTA_BRONZE, nome_seguro(empresa), nome_seguro(aeroporto))
-    os.makedirs(pastaDestino, exist_ok=True)
+    empresa, aeroporto, _ = destino
+    return montar_pasta(camada, empresa, aeroporto)
 
-    # 4) Devolve o caminho para o coletor
-    return pastaDestino
+
+def organizar_camadas(token, conexao=None):
+    """
+    Faz UMA consulta ao banco e garante as pastas das 3 camadas.
+    Retorna {"idAeroporto": ..., "bronze": ..., "prata": ..., "ouro": ...}
+    ou None se o token não tiver aeroporto/empresa vinculados.
+    """
+    destino = resolver_destino(token, conexao)
+    if destino is None:
+        print(f"Token '{token}' sem servidor/aeroporto/empresa vinculados.")
+        return None
+
+    empresa, aeroporto, idAeroporto = destino
+    resultado = {"idAeroporto": idAeroporto}
+    for camada in CAMADAS:
+        resultado[camada] = montar_pasta(camada, empresa, aeroporto)
+    return resultado
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Cria bronze/<empresa>/<aeroporto>/ para um token.")
+    parser = argparse.ArgumentParser(description="Cria <camada>/<empresa>/<aeroporto>/ para um token.")
     parser.add_argument("--token", required=True, help="Token do servidor.")
+    parser.add_argument(
+        "--camada",
+        default="bronze",
+        choices=CAMADAS + ("todas",),
+        help="Camada a criar (padrão: bronze).",
+    )
     args = parser.parse_args()
 
-    pasta = organizar(args.token)
-    if pasta is None:
-        raise SystemExit(1)
-    print(pasta)
+    if args.camada == "todas":
+        destino = organizar_camadas(args.token)
+        if destino is None:
+            raise SystemExit(1)
+        for camada in CAMADAS:
+            print(destino[camada])
+    else:
+        pasta = organizar(args.token, camada=args.camada)
+        if pasta is None:
+            raise SystemExit(1)
+        print(pasta)
 
 
 if __name__ == "__main__":
