@@ -1,2 +1,0 @@
-Hora;UsoCPU_Geral_mean;UsoCPU_Geral_max;UsoRAM_mean;UsoRAM_max;UsoDisco_mean;UsoDisco_max;Qtd_Processos_mean;Qtd_Processos_max;Delta_Swap_In_sum;Delta_Swap_Out_sum;Delta_Read_Bytes_sum;Delta_Write_Bytes_sum;Delta_Rede_Bytes_Enviados_sum;Delta_Rede_Bytes_Recebidos_sum;Qtd_Coletas
-2026-10-16 01:00:00;10.36;27.9;75.56;76.6;79.1;79.1;311.81;319;0.0;0.0;68619776.0;67739648.0;725056.0;525062.0;21
