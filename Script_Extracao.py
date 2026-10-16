@@ -292,7 +292,7 @@ if conexao.is_connected():
             cursorAtualizacao = conexao.cursor(buffered=True)
             cursorAtualizacao.execute(
                 "SELECT c.nomeCodigo, c.codigo FROM componente c "
-                "JOIN servidorComponente sc ON sc.fkComponente = c.idComponente "
+                "JOIN servidorcomponente sc ON sc.fkComponente = c.idComponente "
                 "JOIN servidor s ON s.idServidor = sc.fkServidor "
                 "WHERE s.idServidor = %s",
                 (servidor[0],),
