@@ -15,19 +15,67 @@
 import pandas as pnd                 # monta o DataFrame e exporta para CSV
 from datetime import datetime        # data/hora das coletas
 import os                            # variáveis de ambiente, pastas, clear do terminal
+import boto3                         # permitir que desenvolvedores escrevam scripts e aplicativos em Python para interagir diretamente com os serviços da AWS
 import psutil                        # biblioteca de métricas (CPU, RAM, disco...). Usada pelo eval()!
 import socket                        # pega o hostname da máquina. Também usada pelo eval()
 import time                          # sleep e relógio monotônico
 import mysql.connector               # conexão com o MySQL
 from dotenv import load_dotenv       # lê o arquivo .env
-from Organizador import organizar, PASTA_BRONZE  # cria bronze/<empresa>/<aeroporto>/ e devolve o caminho
+from Organizador import (
+    organizar,
+    PASTA_BRONZE,
+    resolver_destino,
+    montar_chave_s3,
+)  # cria bronze/<empresa>/<aeroporto>/ e devolve o caminho
 
-# Carrega as credenciais do banco (DB_HOST, DB_USER, DB_PASSWORD, DB_NAME) do .env
+# Carrega as configurações do arquivo .env, como os dados do banco.
 load_dotenv()
+
+# Bucket criado pelo script de configuração da equipe.
+NOME_BUCKET = "montech-datalake-9526"
+
+# Região da AWS onde o bucket foi criado.
+REGIAO_AWS = "us-east-1"
+
+# Cria o cliente que será usado para enviar arquivos ao S3.
+# As credenciais são buscadas na configuração do ambiente.
+cliente_s3 = boto3.client("s3", region_name=REGIAO_AWS)
+
+# Pasta local inicial dos CSVs.
+# Depois, o Organizador define a subpasta da empresa e do aeroporto.
+PASTA_CSVS = PASTA_BRONZE
 
 # Pasta onde os CSVs são gravados. Começa na raiz "bronze" (fallback) e é redefinida
 # na Etapa 3 com o caminho bronze/<empresa>/<aeroporto>/ devolvido pelo Organizador.
 PASTA_CSVS = PASTA_BRONZE
+
+
+def enviar_csv_s3(caminho_csv, id_empresa, id_aeroporto, token):
+    # Usa a data do nome do CSV para definir a pasta.
+    # Assim, um arquivo iniciado ontem continua na pasta de ontem.
+    nome_arquivo = os.path.basename(caminho_csv)
+    data_arquivo = nome_arquivo[len(token) + 1:][:10]
+
+    # Monta o destino dentro do bucket.
+    chave_s3 = montar_chave_s3(
+        "bronze",
+        id_empresa,
+        id_aeroporto,
+        token,
+        data_arquivo,
+        nome_arquivo,
+    )
+
+    try:
+        # Envia o CSV local para o caminho definido no S3.
+        cliente_s3.upload_file(caminho_csv, NOME_BUCKET, chave_s3)
+    except Exception as erro:
+        # Mantém o arquivo local se o envio falhar.
+        print(f"\nFalha ao enviar {nome_arquivo}: {erro}")
+        return False
+
+    print(f"\nCSV enviado para s3://{NOME_BUCKET}/{chave_s3}")
+    return True
 
 
 def conectarBanco():
@@ -235,6 +283,19 @@ if conexao.is_connected():
     # "bronze", se não existir) e devolve o caminho. Se o token não tiver
     # aeroporto/empresa vinculados, grava direto em bronze/.
     PASTA_CSVS = organizar(tokenServidor, conexao) or PASTA_BRONZE
+    
+    # Consulta a empresa e o aeroporto vinculados ao token do servidor.
+    destinoServidor = resolver_destino(tokenServidor, conexao)
+
+    # Sem esse vínculo, não conseguimos definir o destino correto no S3.
+    if destinoServidor is None:
+        print("Servidor sem empresa/aeroporto definido. Coleta cancelada.")
+        conexao.close()
+        raise SystemExit(1)
+
+    # A consulta retorna três valores.
+    # O terceiro repete o aeroporto para manter a compatibilidade atual.
+    idEmpresa, idAeroporto, _ = destinoServidor
 
     os.system("cls" if os.name == "nt" else "clear")
     print("""\n========================================\n
@@ -243,10 +304,12 @@ if conexao.is_connected():
     print(f"Gravando em: {PASTA_CSVS}\n")
 
     execucoes = 0                          # contador de coletas feitas
-    intervaloCSVSegundos = 2 * 60 * 60     # a cada 2 horas começa um CSV novo
+    intervaloCSVSegundos = 15 * 60  # Começa um novo CSV a cada 15 minutos
     # Guarda o estado do arquivo atual: quando começou (relógio monotônico) e o caminho.
     # Usa dicionário para as funções internas conseguirem alterar sem precisar de "global".
     estadoCSV = {"inicio": time.monotonic(), "caminho": None}
+    # Guarda os caminhos dos CSVs cujo envio precisa ser repetido.
+    arquivosPendentes = set()
     inicioMonitoramento = time.monotonic() # usado para calcular o tempo total ativo
 
     def atualizarStatus(indiceAnimacao):
@@ -323,6 +386,25 @@ if conexao.is_connected():
             or agoraMonotonico - estadoCSV["inicio"] >= intervaloCSVSegundos
         )
         if novoArquivo:
+            # Envia o CSV anterior antes de começar um novo.
+            # Na primeira coleta, ainda não existe arquivo para enviar.
+            # Guarda o CSV encerrado para envio.
+            if estadoCSV["caminho"] is not None:
+                arquivosPendentes.add(estadoCSV["caminho"])
+
+            # Tenta enviar os arquivos pendentes em cada troca de CSV.
+            # Usa uma cópia do conjunto para poder remover os enviados.
+            for caminhoPendente in list(arquivosPendentes):
+                enviado = enviar_csv_s3(
+                    caminhoPendente,
+                    idEmpresa,
+                    idAeroporto,
+                    tokenServidor,
+                )
+
+                # Remove da fila somente se o envio teve sucesso.
+                if enviado:
+                    arquivosPendentes.discard(caminhoPendente)
             # A cada rotação (menos na primeira coleta, quando a lista acabou de
             # ser carregada na Etapa 2) relê os componentes do banco.
             # Assim as colunas só mudam na troca de arquivo, e um mesmo CSV
@@ -335,7 +417,7 @@ if conexao.is_connected():
 
             estadoCSV["inicio"] = agoraMonotonico
             # Nome: token-AAAA-MM-DD_HHh.csv (sem ":" para funcionar no Windows)
-            nomeArquivo = f"{tokenServidor}-{datetime.now().strftime('%Y-%m-%d_%H')}h.csv"
+            nomeArquivo = f"{tokenServidor}-{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.csv"
             # O CSV é criado direto na pasta bronze/<empresa>/<aeroporto>/
             estadoCSV["caminho"] = os.path.join(PASTA_CSVS, nomeArquivo)
 
@@ -343,7 +425,7 @@ if conexao.is_connected():
         # porque o DataFrame espera colunas com listas (uma linha = 1 elemento)
         resultados = {
             "TimeStamp": [datetime.now().strftime("%Y-%m-%d %H:%M:%S")],
-            "IdAeroporto": [usuario[1]],  # fkAeroporto do usuário logado
+            "IdAeroporto": [idAeroporto],   # Usa o aeroporto vinculado ao servidor monitorado.
         }
 
         # Colunas dinâmicas: uma para cada componente vindo do banco
@@ -395,8 +477,34 @@ if conexao.is_connected():
                 aguardarProximaColeta()
                 coletarMetricas()
         except KeyboardInterrupt:
-            # Ctrl+C encerra com mensagem limpa. \r\033[K volta ao início da linha e apaga o resto
+            # Inclui o CSV atual na fila antes de encerrar.
+            caminhoFinal = estadoCSV["caminho"]
+
+            if caminhoFinal is not None and os.path.isfile(caminhoFinal):
+                arquivosPendentes.add(caminhoFinal)
+
+            # Tenta enviar todos os arquivos pendentes.
+            for caminhoPendente in list(arquivosPendentes):
+                enviado = enviar_csv_s3(
+                    caminhoPendente,
+                    idEmpresa,
+                    idAeroporto,
+                    tokenServidor,
+                )
+
+                # Retira da fila apenas os enviados com sucesso.
+                if enviado:
+                    arquivosPendentes.discard(caminhoPendente)
+
+            # Os arquivos que falharem continuam salvos no computador.
+            if arquivosPendentes:
+                print(
+                    f"\nAtenção: {len(arquivosPendentes)} arquivo(s) "
+                    "não enviado(s). Os CSVs continuam salvos localmente."
+                )
+
+            # Mostra o total de coletas realizadas antes de sair.
             print(
-                f"\r\033[KMonitoramento encerrado. Coletas salvas: {execucoes}.",
+                f"\nMonitoramento encerrado. Coletas salvas: {execucoes}.",
                 flush=True,
             )

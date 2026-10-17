@@ -15,14 +15,32 @@
 import re
 from pathlib import Path
 
+import boto3
+from io import BytesIO
+
 import pandas as pnd
 
-from Organizador import conectar_banco, organizar_camadas, PASTA_BRONZE
+from Organizador import (
+    conectar_banco,
+    organizar_camadas,
+    PASTA_BRONZE,
+    resolver_destino,
+    montar_chave_s3,
+)
 
+
+# Bucket e região configurados para o projeto.
+NOME_BUCKET = "montech-datalake-9526"
+REGIAO_AWS = "us-east-1"
+
+# Cliente usado para ler e gravar arquivos no S3.
+cliente_s3 = boto3.client("s3", region_name=REGIAO_AWS)
 
 # Nome gerado pelo Script_Extracao: <token>-AAAA-MM-DD_HHh.csv
 # O regex pega tudo antes da data como token (não depende do tamanho do token).
-PADRAO_ARQUIVO = re.compile(r"^(?P<token>.+)-\d{4}-\d{2}-\d{2}_\d{2}h$")
+PADRAO_ARQUIVO = re.compile(
+    r"^(?P<token>.+)-\d{4}-\d{2}-\d{2}_\d{2}(?:h|-\d{2}-\d{2})$"
+)
 
 COLUNAS_NUMERICAS = [
     "IdAeroporto",
@@ -47,6 +65,37 @@ CONTADORES = {
     "Rede_Bytes_Enviados": "Delta_Rede_Bytes_Enviados",
     "Rede_Bytes_Recebidos": "Delta_Rede_Bytes_Recebidos"
 }
+
+def AgruparCsvsS3PorToken():
+    # Agrupa as chaves dos CSVs pelo token do servidor.
+    arquivos_por_token = {}
+
+    # A paginação permite listar todos os objetos, mesmo acima de 1.000.
+    paginador = cliente_s3.get_paginator("list_objects_v2")
+
+    for pagina in paginador.paginate(
+        Bucket=NOME_BUCKET,
+        Prefix="01-bronze/",
+    ):
+        for objeto in pagina.get("Contents", []):
+            chave = objeto["Key"]
+
+            # Ignora marcadores de pasta e arquivos que não sejam CSV.
+            if not chave.endswith(".csv"):
+                continue
+
+            # Verifica o nome usando o padrão já definido na ETL.
+            nome_sem_extensao = Path(chave).stem
+            correspondencia = PADRAO_ARQUIVO.match(nome_sem_extensao)
+
+            if correspondencia is None:
+                print(f"Ignorado (nome fora do padrão): {chave}")
+                continue
+
+            token = correspondencia["token"]
+            arquivos_por_token.setdefault(token, []).append(chave)
+
+    return arquivos_por_token
 
 
 def AgruparCsvsPorToken(pasta_bronze):
@@ -83,6 +132,39 @@ def LerCsvs(arquivos):
     if not partes:
         return pnd.DataFrame()
 
+    return pnd.concat(partes, ignore_index=True)
+
+
+def LerCsvsS3(chaves):
+    # Guarda os dados de cada CSV para juntá-los ao final.
+    partes = []
+
+    for chave in sorted(chaves):
+        resposta = cliente_s3.get_object(
+            Bucket=NOME_BUCKET,
+            Key=chave,
+        )
+
+        # Lê o objeto e fecha a conexão de leitura, mesmo se ocorrer erro.
+        corpo = resposta["Body"]
+        try:
+            conteudo = corpo.read()
+        finally:
+            corpo.close()
+
+        try:
+            # Lê o CSV em memória, usando o separador da captura.
+            df = pnd.read_csv(BytesIO(conteudo), sep=";")
+        except pnd.errors.EmptyDataError:
+            print(f"Arquivo vazio ignorado: {chave}")
+            continue
+
+        partes.append(df)
+
+    if not partes:
+        return pnd.DataFrame()
+
+    # Une os arquivos, preservando colunas que variam entre eles.
     return pnd.concat(partes, ignore_index=True)
 
 
@@ -246,6 +328,66 @@ def GerarOuro(df):
     return ouro.round(2).reset_index()
 
 
+def SalvarCsvS3(df, camada, id_empresa, id_aeroporto, token, data):
+    # Define o nome do CSV consolidado do dia.
+    nome_arquivo = f"{token}-{data}.csv"
+
+    # Monta o destino na camada solicitada.
+    chave = montar_chave_s3(
+        camada,
+        id_empresa,
+        id_aeroporto,
+        token,
+        data,
+        nome_arquivo,
+    )
+
+    # Converte os dados para CSV.
+    conteudo = df.to_csv(sep=";", index=False).encode("utf-8")
+
+    # Envia o CSV para o S3.
+    cliente_s3.put_object(
+        Bucket=NOME_BUCKET,
+        Key=chave,
+        Body=conteudo,
+        ContentType="text/csv; charset=utf-8",
+    )
+
+    print(f"CSV gravado em: s3://{NOME_BUCKET}/{chave}")
+
+
+def SalvarJsonS3(df, id_empresa, id_aeroporto, token, data):
+    # Define o nome do JSON consolidado do dia.
+    nome_arquivo = f"{token}-{data}.json"
+
+    # Monta o destino na camada 03-gold.
+    chave = montar_chave_s3(
+        "ouro",
+        id_empresa,
+        id_aeroporto,
+        token,
+        data,
+        nome_arquivo,
+    )
+
+    # Converte cada linha em um objeto JSON, com datas em formato ISO.
+    conteudo = df.to_json(
+        orient="records",
+        date_format="iso",
+        force_ascii=False,
+        indent=2,
+    ).encode("utf-8")
+
+    # Envia o JSON para o S3.
+    cliente_s3.put_object(
+        Bucket=NOME_BUCKET,
+        Key=chave,
+        Body=conteudo,
+        ContentType="application/json; charset=utf-8",
+    )
+
+    print(f"JSON gravado em: s3://{NOME_BUCKET}/{chave}")
+
 def main():
 
     conexao = conectar_banco()
@@ -257,7 +399,8 @@ def main():
     print("Conectado ao banco de dados!")
 
     try:
-        arquivos_por_token = AgruparCsvsPorToken(PASTA_BRONZE)
+        # Lista os CSVs de bronze no S3 e agrupa por servidor.
+        arquivos_por_token = AgruparCsvsS3PorToken()
         print(f"{len(arquivos_por_token)} servidor(es) encontrado(s) no bronze.")
 
         for token, arquivos in arquivos_por_token.items():
@@ -272,14 +415,18 @@ def main():
             if destino is None:
                 print("Servidor não encontrado. Token ignorado.")
                 continue
+            
+                        # Busca os IDs usados para montar os destinos no S3.
+            dadosDestino = resolver_destino(token, conexao)
 
-            # avisa se algum CSV está fora da pasta esperada (ex.: servidor trocou de aeroporto no banco)
-            pasta_esperada = Path(destino["bronze"]).resolve()
-            for arquivo in arquivos:
-                if arquivo.resolve().parent != pasta_esperada:
-                    print(f"Aviso: {arquivo} está fora de {pasta_esperada}")
+            if dadosDestino is None:
+                print("Não foi possível resolver o destino. Token ignorado.")
+                continue
 
-            df = LerCsvs(arquivos)
+            idEmpresa, idAeroporto, _ = dadosDestino
+
+            # Lê e reúne os CSVs deste servidor diretamente do S3.
+            df = LerCsvsS3(arquivos)
 
             if df.empty:
                 print("Sem dados para processar.")
@@ -292,21 +439,37 @@ def main():
                 print("Nenhuma linha válida após o tratamento.")
                 continue
 
-            # PRATA: dados tratados
-            caminho_prata = Path(destino["prata"]) / f"{token}.csv"
-            df.to_csv(caminho_prata, sep=";", index=False, encoding="utf-8")
-            print("Prata gravada em:", caminho_prata)
+            # Separa os dados tratados por dia.
+            # Os deltas já foram calculados antes dessa separação,
+            # preservando a continuidade entre arquivos e dias.
+            for dia, dadosDia in df.groupby(df["TimeStamp"].dt.date):
+                data = dia.isoformat()
 
-            # OURO: resumo por hora
-            ouro = GerarOuro(df)
+                # SILVER: salva todas as coletas válidas do dia em CSV.
+                SalvarCsvS3(
+                    dadosDia,
+                    "prata",
+                    idEmpresa,
+                    idAeroporto,
+                    token,
+                    data,
+                )
 
-            if ouro.empty:
-                print("Ouro não gerada (sem colunas para agregar).")
-                continue
+                # GOLD: calcula o resumo por hora para este dia.
+                ouro = GerarOuro(dadosDia)
 
-            caminho_ouro = Path(destino["ouro"]) / f"{token}.csv"
-            ouro.to_csv(caminho_ouro, sep=";", index=False, encoding="utf-8")
-            print("Ouro gravada em:", caminho_ouro)
+                if ouro.empty:
+                    print(f"Sem dados para gerar gold em {data}.")
+                    continue
+
+                # Salva o resumo diário em JSON na camada 03-gold.
+                SalvarJsonS3(
+                    ouro,
+                    idEmpresa,
+                    idAeroporto,
+                    token,
+                    data,
+                )
 
     finally:
         conexao.close()

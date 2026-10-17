@@ -47,10 +47,10 @@ PASTA_BRONZE = PASTAS_CAMADAS["bronze"]
 #            empresa(idEmpresa, razaoSocial)
 # ------------------------------------------------------------
 SQL_DESTINO = """
-    SELECT e.razaoSocial, a.nome, a.idAeroporto
+    SELECT e.idEmpresa, a.idAeroporto, a.idAeroporto
     FROM servidor s
     JOIN aeroporto a ON a.idAeroporto = s.fkAeroporto
-    JOIN empresa e   ON e.idEmpresa   = a.fkEmpresa
+    JOIN empresa e ON e.idEmpresa = a.fkEmpresa
     WHERE s.token = %s
 """
 
@@ -169,6 +169,26 @@ def organizar_camadas(token, conexao=None):
         resultado[camada] = montar_pasta(camada, empresa, aeroporto)
     return resultado
 
+
+def montar_chave_s3(camada, id_empresa, id_aeroporto, token, data, nome_arquivo):
+    """Monta o caminho do CSV usando os prefixos criados pela equipe."""
+    prefixos_s3 = {
+        "bronze": "01-bronze",
+        "prata": "02-silver",
+        "ouro": "03-gold",
+    }
+
+    if camada not in prefixos_s3:
+        raise ValueError(f"Camada inválida: {camada}")
+
+    # Mantém os nomes usados no Python e traduz para a estrutura do S3.
+    prefixo = prefixos_s3[camada]
+
+    return (
+        f"{prefixo}/{id_empresa}/{id_aeroporto}/"
+        f"{token}/{data}/{nome_arquivo}"
+    )
+    
 
 def main():
     parser = argparse.ArgumentParser(description="Cria <camada>/<empresa>/<aeroporto>/ para um token.")
