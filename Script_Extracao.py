@@ -33,7 +33,7 @@ from Organizador import (
 load_dotenv()
 
 # Bucket criado pelo script de configuração da equipe.
-NOME_BUCKET = "montech-datalake-9526"
+NOME_BUCKET = "montech-datalake-2492"
 
 # Região da AWS onde o bucket foi criado.
 REGIAO_AWS = "us-east-1"
@@ -292,7 +292,7 @@ if conexao.is_connected():
     print(f"Gravando em: {PASTA_CSVS}\n")
 
     execucoes = 0
-    intervaloCSVSegundos = 15 * 60
+    intervaloCSVSegundos = 5
     estadoCSV = {"inicio": time.monotonic(), "caminho": None}
     arquivosPendentes = set()
     inicioMonitoramento = time.monotonic()
