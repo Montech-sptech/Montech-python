@@ -1,3 +1,0 @@
-TimeStamp;IdAeroporto;UsoCPU_Geral;UsoRAM;Swap_In;Swap_Out;UsoDisco;Disco_Read_Bytes;Disco_Write_Bytes;Rede_Bytes_Enviados;Rede_Bytes_Recebidos;Qtd_Processos
-2026-11-03 18:39:44;1;5.6;78.6;0;0;79.7;27231034368;25055548416;106176723;349030275;323
-2026-11-03 18:39:48;1;7.9;78.6;0;0;79.7;27231050752;25055736832;106181125;349248245;322
