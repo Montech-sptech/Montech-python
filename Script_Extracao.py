@@ -8,7 +8,10 @@
 #   4. O Organizador (executado UMA vez) descobre empresa/aeroporto do token,
 #      cria bronze/<empresa>/<aeroporto>/ se não existir e devolve esse caminho
 #   5. Em loop, executa o "codigo" de cada componente e grava uma linha no CSV,
-#      direto dentro da pasta devolvida pelo Organizador
+#      direto dentro da pasta devolvida pelo Organizador.
+#      Existe UM CSV por dia (<token>-AAAA-MM-DD.csv): se ele já existir,
+#      as novas linhas são adicionadas ao final, sem sobrescrever nada.
+#      A cada novo registro, o CSV do dia é enviado ao S3.
 #
 # IMPORTANTE: este arquivo e o Organizador.py precisam ficar na MESMA pasta.
 # ============================================================
@@ -292,8 +295,7 @@ if conexao.is_connected():
     print(f"Gravando em: {PASTA_CSVS}\n")
 
     execucoes = 0
-    intervaloCSVSegundos = 5
-    estadoCSV = {"inicio": time.monotonic(), "caminho": None}
+    estadoCSV = {"dia": None, "caminho": None}
     arquivosPendentes = set()
     inicioMonitoramento = time.monotonic()
 
@@ -350,15 +352,17 @@ if conexao.is_connected():
     def coletarMetricas():
         global componentes
 
-        agoraMonotonico = time.monotonic()
+        agora = datetime.now()
+        diaAtual = agora.strftime("%Y-%m-%d")
+
+        # Só troca de arquivo quando o dia muda (ou na primeira coleta)
         novoArquivo = (
             estadoCSV["caminho"] is None
-            or agoraMonotonico - estadoCSV["inicio"] >= intervaloCSVSegundos
+            or estadoCSV["dia"] != diaAtual
         )
         if novoArquivo:
-            if estadoCSV["caminho"] is not None:
-                arquivosPendentes.add(estadoCSV["caminho"])
-
+            # Reenvia arquivos cujo envio falhou antes (o do dia anterior já foi
+            # enviado a cada registro, então só entra aqui se houve falha).
             for caminhoPendente in list(arquivosPendentes):
                 enviado = enviar_csv_s3(
                     caminhoPendente,
@@ -375,12 +379,14 @@ if conexao.is_connected():
                 if componentesAtualizados is not None:
                     componentes = componentesAtualizados
 
-            estadoCSV["inicio"] = agoraMonotonico
-            nomeArquivo = f"{tokenServidor}-{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.csv"
+            estadoCSV["dia"] = diaAtual
+            # Um CSV por dia. Se já existir (ex.: script reiniciado no mesmo dia),
+            # o bloco de gravação abaixo apenas adiciona as linhas no final.
+            nomeArquivo = f"{tokenServidor}-{diaAtual}.csv"
             estadoCSV["caminho"] = os.path.join(PASTA_CSVS, nomeArquivo)
 
         resultados = {
-            "TimeStamp": [datetime.now().strftime("%Y-%m-%d %H:%M:%S")],
+            "TimeStamp": [agora.strftime("%Y-%m-%d %H:%M:%S")],
             "IdAeroporto": [idAeroporto],
         }
 
@@ -408,6 +414,20 @@ if conexao.is_connected():
             header=not arquivoExiste,
             encoding='utf-8'
         )
+
+        # Envia o CSV do dia ao S3 a cada novo registro (o arquivo inteiro,
+        # substituindo a versão anterior na mesma chave). Se falhar, fica
+        # pendente e é reenviado no próximo registro.
+        enviado = enviar_csv_s3(
+            caminhoCSV,
+            idEmpresa,
+            idAeroporto,
+            tokenServidor,
+        )
+        if enviado:
+            arquivosPendentes.discard(caminhoCSV)
+        else:
+            arquivosPendentes.add(caminhoCSV)
 
         global execucoes
         execucoes += 1
