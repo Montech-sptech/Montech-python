@@ -33,7 +33,7 @@ from Organizador import (
 load_dotenv()
 
 # Bucket criado pelo script de configuração da equipe.
-NOME_BUCKET = "montech-datalake-2492"
+NOME_BUCKET = "montech-datalake-4333"
 
 # Região da AWS onde o bucket foi criado.
 REGIAO_AWS = "us-east-1"

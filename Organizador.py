@@ -63,6 +63,7 @@ def conectar_banco():
             user=os.getenv("DB_USER"),
             password=os.getenv("DB_PASSWORD"),
             database=os.getenv("DB_NAME"),
+            port=os.getenv("DB_PORT"),
         )
     except mysql.connector.Error as erro:
         print(f"Erro ao conectar ao banco de dados: {erro}")
