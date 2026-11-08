@@ -1,3 +1,5 @@
 csvs
 .env
+# CSVs gerados pela captura local
 /bronze
+
