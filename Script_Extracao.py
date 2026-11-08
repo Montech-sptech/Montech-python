@@ -292,6 +292,8 @@ if conexao.is_connected():
     print(f"Gravando em: {PASTA_CSVS}\n")
 
     execucoes = 0
+    intervaloColetaSegundos = 10
+    proximaColeta = time.monotonic() + intervaloColetaSegundos
     intervaloCSVSegundos = 5
     estadoCSV = {"inicio": time.monotonic(), "caminho": None}
     arquivosPendentes = set()
@@ -315,12 +317,26 @@ if conexao.is_connected():
         )
 
     def aguardarProximaColeta():
-        fimEspera = time.monotonic() + 3
+        global proximaColeta
+
         indiceAnimacao = 0
-        while time.monotonic() < fimEspera:
+
+        # Aguarda o horário previsto, mantendo o status animado.
+        while time.monotonic() < proximaColeta:
             atualizarStatus(indiceAnimacao)
             indiceAnimacao += 1
-            time.sleep(0.2)
+
+            restante = proximaColeta - time.monotonic()
+            time.sleep(max(0, min(0.2, restante)))
+
+        proximaColeta += intervaloColetaSegundos
+
+        # Se a coleta anterior demorou demais, evita executar
+        # várias coletas seguidas para compensar o atraso.
+        if proximaColeta <= time.monotonic():
+            proximaColeta = (
+                time.monotonic() + intervaloColetaSegundos
+            )
 
     def buscarComponentesAtualizados():
         cursorAtualizacao = None
