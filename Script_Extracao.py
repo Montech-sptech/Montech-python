@@ -3,12 +3,15 @@
 # Fluxo geral:
 #   1. Conecta ao banco MySQL
 #   2. Faz login do usuário (email + senha)
-#   3. Pede o token do servidor, busca os componentes dele no banco
+#   3. Pede o token do servidor, valida no banco
 #      e atualiza o statusAtividade para 1 se estiver como 0
 #   4. O Organizador (executado UMA vez) descobre empresa/aeroporto do token,
 #      cria bronze/<empresa>/<aeroporto>/ se não existir e devolve esse caminho
-#   5. Em loop, executa o "codigo" de cada componente e grava uma linha no CSV,
+#   5. Em loop, coleta TODAS as métricas definidas em COLETORES (neste arquivo,
+#      independente do que está cadastrado no banco) e grava uma linha no CSV,
 #      direto dentro da pasta devolvida pelo Organizador.
+#      As colunas do CSV são os mesmos nomeCodigo da tabela "componente".
+#      Quem decide quais colunas serão usadas é a ETL, com base no banco.
 #      Existe UM CSV por dia (<token>-AAAA-MM-DD.csv): se ele já existir,
 #      as novas linhas são adicionadas ao final, sem sobrescrever nada.
 #      A cada novo registro, o CSV do dia é enviado ao S3.
@@ -20,9 +23,9 @@ import pandas as pnd                 # monta o DataFrame e exporta para CSV
 from datetime import datetime        # data/hora das coletas
 import os                            # variáveis de ambiente, pastas, clear do terminal
 import boto3                         # permitir que desenvolvedores escrevam scripts e aplicativos em Python para interagir diretamente com os serviços da AWS
-import psutil                        # biblioteca de métricas (CPU, RAM, disco...). Usada pelo eval()!
-import socket                        # pega o hostname da máquina. Também usada pelo eval()
+import psutil                        # biblioteca de métricas (CPU, RAM, disco...)
 import time                          # sleep e relógio monotônico
+import subprocess                    # chama o PowerShell para ler a temperatura via WMI (Windows)
 import mysql.connector               # conexão com o MySQL
 from dotenv import load_dotenv       # lê o arquivo .env
 from Organizador import (
@@ -48,6 +51,96 @@ cliente_s3 = boto3.client("s3", region_name=REGIAO_AWS)
 # Pasta local inicial dos CSVs.
 # Depois, o Organizador define a subpasta da empresa e do aeroporto.
 PASTA_CSVS = PASTA_BRONZE
+
+# Disco monitorado: raiz do Windows ou do Linux/Mac.
+DISCO_RAIZ = "C:\\" if os.name == "nt" else "/"
+
+def lerTemperaturaWindowsWMI():
+    comando = (
+        "Get-CimInstance -Namespace root/wmi -ClassName MSAcpi_ThermalZoneTemperature "
+        "| ForEach-Object { $_.CurrentTemperature }"
+    )
+    try:
+        saida = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", comando],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        ).stdout
+    except Exception:
+        return None
+
+    temperaturas = []
+    for linha in saida.split():
+        try:
+            celsius = float(linha) / 10 - 273.15   # vem em décimos de Kelvin
+        except ValueError:
+            continue
+        if 5 < celsius < 150:                      # descarta valores falsos/fixos (ex.: 2732 = 0 °C)
+            temperaturas.append(celsius)
+
+    return round(max(temperaturas), 1) if temperaturas else None
+
+
+def lerTemperaturaCPU():
+    # Windows: lê via WMI (sem bibliotecas extras).
+    if os.name == "nt":
+        return lerTemperaturaWindowsWMI()
+
+    # Linux/Mac: usa o psutil e devolve um número (°C), igual ao do Windows.
+    sensores = psutil.sensors_temperatures()
+    if not sensores:
+        return None
+
+    # Prefere os sensores de CPU mais comuns; senão pega o primeiro disponível.
+    for chave in ("coretemp", "k10temp", "zenpower", "cpu_thermal", "cpu-thermal"):
+        if chave in sensores and sensores[chave]:
+            leituras = sensores[chave]
+            break
+    else:
+        leituras = next((l for l in sensores.values() if l), None)
+        if leituras is None:
+            return None
+
+    # Prefere a leitura geral do processador (Package/Tctl) quando existir.
+    for leitura in leituras:
+        if any(t in (leitura.label or "") for t in ("Package", "Tctl", "Tdie")):
+            return leitura.current
+    return leituras[0].current
+
+
+# ============================================================
+# MÉTRICAS COLETADAS
+# Chave = nomeCodigo (mesmo valor da coluna nomeCodigo da tabela
+# "componente" e nome da coluna no CSV).
+# Valor = função que retorna a métrica (lambda, para só executar
+# no momento da coleta).
+# Para adicionar uma métrica nova: crie a linha aqui E cadastre o
+# mesmo nomeCodigo na tabela "componente".
+# ============================================================
+COLETORES = {
+    "UsoCPU_Geral":           lambda: psutil.cpu_percent(interval=1),
+    "UsoRAM":                 lambda: psutil.virtual_memory().percent,
+    "Swap_In":                lambda: psutil.swap_memory().sin,
+    "Swap_Out":               lambda: psutil.swap_memory().sout,
+    "UsoDisco":               lambda: psutil.disk_usage(DISCO_RAIZ).percent,
+    "Disco_Read_Bytes":       lambda: psutil.disk_io_counters().read_bytes,
+    "Disco_Write_Bytes":      lambda: psutil.disk_io_counters().write_bytes,
+    "Rede_Bytes_Enviados":    lambda: psutil.net_io_counters().bytes_sent,
+    "Rede_Bytes_Recebidos":   lambda: psutil.net_io_counters().bytes_recv,
+    "Rede_Pacotes_Enviados":  lambda: psutil.net_io_counters().packets_sent,
+    "Rede_Pacotes_Recebidos": lambda: psutil.net_io_counters().packets_recv,
+    "Temperatura_CPU":        lerTemperaturaCPU,
+    "Qtd_Processos":          lambda: len(psutil.pids()),
+
+    # Adicionais para predição (apenas os usados no script R)
+    "RAM_Livre":              lambda: psutil.virtual_memory().free,
+    "CPU_Ctx_Switches":       lambda: psutil.cpu_stats().ctx_switches,
+    "CPU_Interrupts":         lambda: psutil.cpu_stats().interrupts,
+    "CPU_Syscalls":           lambda: psutil.cpu_stats().syscalls,
+    "Disco_Write_Count":      lambda: psutil.disk_io_counters().write_count,
+}
 
 
 def enviar_csv_s3(caminho_csv, id_empresa, id_aeroporto, token):
@@ -165,9 +258,8 @@ while True:
     os.system("cls" if os.name == "nt" else "clear")
 
 # ============================================================
-# ETAPA 2: TOKEN DO SERVIDOR + COMPONENTES
-# Pede o token, descobre o idServidor, atualiza o status se for 0
-# e carrega a lista de componentes.
+# ETAPA 2: TOKEN DO SERVIDOR
+# Pede o token, descobre o idServidor e atualiza o status se for 0.
 # ============================================================
 while True:
     try:
@@ -240,35 +332,9 @@ while True:
                 except mysql.connector.Error:
                     pass
 
-        # Busca os componentes desse servidor
-        cursorComponente = None
-        try:
-            if not conexao.is_connected():
-                conexao.reconnect(attempts=3, delay=2)
-
-            cursorComponente = conexao.cursor(buffered=True)
-            cursorComponente.execute(
-                "SELECT c.nomeCodigo, c.codigo FROM componente c JOIN servidorcomponente sc ON sc.fkComponente = c.idComponente JOIN servidor s ON s.idServidor = sc.fkServidor WHERE s.idServidor = %s",
-                (servidor[0],),
-            )
-            componentes = cursorComponente.fetchall()
-        except mysql.connector.Error as erro:
-            print(f"\nErro no banco de dados ao buscar os componentes: {erro}")
-            conexao = conectarBanco()
-            continue
-        finally:
-            if cursorComponente is not None:
-                try:
-                    cursorComponente.close()
-                except mysql.connector.Error:
-                    pass
-
-        if componentes is not None:
-            print("\nComponentes recolhidos com sucesso!")
-            break
-
-        os.system("cls" if os.name == "nt" else "clear")
-        print("Falha verificação dos componentes. Retorno nulo.")
+        # Os componentes NÃO são mais buscados aqui: o script coleta tudo
+        # o que está em COLETORES. A seleção por servidor é feita na ETL.
+        break
     else:
         print("\nToken não encontrado. Verifique e tente novamente.")
 
@@ -324,34 +390,7 @@ if conexao.is_connected():
             indiceAnimacao += 1
             time.sleep(0.2)
 
-    def buscarComponentesAtualizados():
-        cursorAtualizacao = None
-        try:
-            if not conexao.is_connected():
-                conexao.reconnect(attempts=3, delay=2)
-
-            cursorAtualizacao = conexao.cursor(buffered=True)
-            cursorAtualizacao.execute(
-                "SELECT c.nomeCodigo, c.codigo FROM componente c "
-                "JOIN servidorcomponente sc ON sc.fkComponente = c.idComponente "
-                "JOIN servidor s ON s.idServidor = sc.fkServidor "
-                "WHERE s.idServidor = %s",
-                (servidor[0],),
-            )
-            return cursorAtualizacao.fetchall()
-        except mysql.connector.Error as erro:
-            print(f"\nNão foi possível atualizar as métricas: {erro}")
-            return None
-        finally:
-            if cursorAtualizacao is not None:
-                try:
-                    cursorAtualizacao.close()
-                except mysql.connector.Error:
-                    pass
-
     def coletarMetricas():
-        global componentes
-
         agora = datetime.now()
         diaAtual = agora.strftime("%Y-%m-%d")
 
@@ -374,11 +413,6 @@ if conexao.is_connected():
                 if enviado:
                     arquivosPendentes.discard(caminhoPendente)
 
-            if estadoCSV["caminho"] is not None:
-                componentesAtualizados = buscarComponentesAtualizados()
-                if componentesAtualizados is not None:
-                    componentes = componentesAtualizados
-
             estadoCSV["dia"] = diaAtual
             # Um CSV por dia. Se já existir (ex.: script reiniciado no mesmo dia),
             # o bloco de gravação abaixo apenas adiciona as linhas no final.
@@ -390,13 +424,15 @@ if conexao.is_connected():
             "IdAeroporto": [idAeroporto],
         }
 
-        for nomeCodigo, codigo in componentes:
+        for nomeCodigo, coletor in COLETORES.items():
             try:
-                valor = eval(codigo)
+                valor = coletor()
                 if isinstance(valor, (list, tuple, dict)):
                     valor = str(valor)
             except Exception as erro:
-                print(f"Erro ao executar '{codigo}': {erro}")
+                # Ex.: sensors_temperatures() não existe no Windows.
+                # A coluna continua no CSV, só que vazia.
+                print(f"\nErro ao coletar '{nomeCodigo}': {erro}")
                 valor = None
             resultados[nomeCodigo] = [valor]
 
