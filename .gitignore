@@ -2,4 +2,6 @@ csvs
 .env
 # CSVs gerados pela captura local
 /bronze
-
+/silver
+/gold
+__pycache__

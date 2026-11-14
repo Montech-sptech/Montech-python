@@ -19,9 +19,11 @@ DB_PASSWORD=SenhaUser
 DB_NAME=NomeDataBase
 
 # INICIALIZAÇÃO
-Para iniciar no Windows:
+Para iniciar no Windows (Execute o cmd como adm para funcionar a captura):
 python Script_Extracao.py
 python Script_tratamento.py
+
+(lembre-se de colocar as credenciais da aws no user adm)
 
 Para iniciar no Linux:
 python3 Script_Extracao.py

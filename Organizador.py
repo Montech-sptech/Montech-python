@@ -3,12 +3,12 @@
 #
 # Fluxo (executado UMA vez por token):
 #   1. Consulta no MySQL: token do servidor -> aeroporto -> empresa
-#   2. Garante <camada>/<empresa>/<aeroporto>/ (cria raiz e subpastas se não existirem)
+#   2. Garante <camada>/<empresa>/<aeroporto>/<token>/ (cria raiz e subpastas se não existirem)
 #   3. Devolve o(s) caminho(s) para quem chamou (coletor ou ETL)
 #
 # Uso pelo coletor (Script_Extracao.py) - NADA muda:
 #   from Organizador import organizar
-#   pasta = organizar(token, conexao)              # bronze/<empresa>/<aeroporto>/
+#   pasta = organizar(token, conexao)              # bronze/<empresa>/<aeroporto>/<token>/
 #
 # Uso pela ETL (etl_1.py):
 #   from Organizador import organizar_camadas
@@ -63,6 +63,7 @@ def conectar_banco():
             user=os.getenv("DB_USER"),
             password=os.getenv("DB_PASSWORD"),
             database=os.getenv("DB_NAME"),
+            port=os.getenv("DB_PORT"),
         )
     except mysql.connector.Error as erro:
         print(f"Erro ao conectar ao banco de dados: {erro}")
@@ -118,21 +119,23 @@ def resolver_destino(token, conexao=None):
                 pass
 
 
-def montar_pasta(camada, empresa, aeroporto):
-    """Cria (se preciso) <camada>/<empresa>/<aeroporto>/ e devolve o caminho."""
+def montar_pasta(camada, empresa, aeroporto, token):
+    """Cria (se preciso) <camada>/<empresa>/<aeroporto>/<token>/ e devolve o caminho."""
     raiz = PASTAS_CAMADAS[camada]
     if not os.path.isdir(raiz):
         os.makedirs(raiz)
         print(f"Pasta raiz criada: {raiz}")
 
-    pasta = os.path.join(raiz, nome_seguro(empresa), nome_seguro(aeroporto))
+    pasta = os.path.join(
+        raiz, nome_seguro(empresa), nome_seguro(aeroporto), nome_seguro(token)
+    )
     os.makedirs(pasta, exist_ok=True)
     return pasta
 
 
 def organizar(token, conexao=None, camada="bronze"):
     """
-    Garante <camada>/<empresa>/<aeroporto>/ para o token e devolve o caminho.
+    Garante <camada>/<empresa>/<aeroporto>/<token>/ para o token e devolve o caminho.
     Retorna None se o token não tiver aeroporto/empresa vinculados ou se o banco falhar
     (a pasta raiz da camada é criada de qualquer forma).
 
@@ -149,7 +152,7 @@ def organizar(token, conexao=None, camada="bronze"):
         return None
 
     empresa, aeroporto, _ = destino
-    return montar_pasta(camada, empresa, aeroporto)
+    return montar_pasta(camada, empresa, aeroporto, token)
 
 
 def organizar_camadas(token, conexao=None):
@@ -166,7 +169,7 @@ def organizar_camadas(token, conexao=None):
     empresa, aeroporto, idAeroporto = destino
     resultado = {"idAeroporto": idAeroporto}
     for camada in CAMADAS:
-        resultado[camada] = montar_pasta(camada, empresa, aeroporto)
+        resultado[camada] = montar_pasta(camada, empresa, aeroporto, token)
     return resultado
 
 
@@ -191,7 +194,7 @@ def montar_chave_s3(camada, id_empresa, id_aeroporto, token, data, nome_arquivo)
     
 
 def main():
-    parser = argparse.ArgumentParser(description="Cria <camada>/<empresa>/<aeroporto>/ para um token.")
+    parser = argparse.ArgumentParser(description="Cria <camada>/<empresa>/<aeroporto>/<token>/ para um token.")
     parser.add_argument("--token", required=True, help="Token do servidor.")
     parser.add_argument(
         "--camada",

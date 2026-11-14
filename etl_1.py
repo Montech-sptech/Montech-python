@@ -30,7 +30,7 @@ from Organizador import (
 
 
 # Bucket e região configurados para o projeto.
-NOME_BUCKET = "montech-datalake-2492"
+NOME_BUCKET = "montech-datalake-4333"
 REGIAO_AWS = "us-east-1"
 
 # Cliente usado para ler e gravar arquivos no S3.
