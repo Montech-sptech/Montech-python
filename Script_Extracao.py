@@ -171,7 +171,7 @@ def coletarProcessos():
     # antes do loop principal para "aquecer" a leitura.
     processos = []
 
-    for proc in psutil.process_iter(["pid", "name", "cpu_percent", "memory_percent"]):
+    for proc in psutil.process_iter(["pid", "name", "cpu_percent", "memory_percent", "status"]):
         try:
             info = proc.info
             cpu = info["cpu_percent"]
@@ -182,6 +182,8 @@ def coletarProcessos():
                 "Nome": info["name"] or "",
                 "CPU": round(cpu / QTD_NUCLEOS, 2) if cpu is not None else None,
                 "RAM": round(ram, 2) if ram is not None else None,
+                # status vem de psutil.status e descreve estado do processo
+                "Status": (info.get("status") or "").upper(),
             })
         except (psutil.NoSuchProcess, psutil.ZombieProcess):
             # O processo terminou durante a leitura: ignora.
