@@ -85,7 +85,8 @@ def lerTemperaturaWindowsWMI():
             timeout=5,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         ).stdout
-    except Exception:
+    except (Exception, KeyboardInterrupt):
+        # inclui KeyboardInterrupt porque communicate pode levantar durante wait
         return None
 
     temperaturas = []
@@ -171,23 +172,28 @@ def coletarProcessos():
     # antes do loop principal para "aquecer" a leitura.
     processos = []
 
-    for proc in psutil.process_iter(["pid", "name", "cpu_percent", "memory_percent", "status"]):
-        try:
-            info = proc.info
-            cpu = info["cpu_percent"]
-            ram = info["memory_percent"]
+    try:
+        for proc in psutil.process_iter(["pid", "name", "cpu_percent", "memory_percent", "status"]):
+            try:
+                info = proc.info
+                cpu = info["cpu_percent"]
+                ram = info["memory_percent"]
 
-            processos.append({
-                "PID": info["pid"],
-                "Nome": info["name"] or "",
-                "CPU": round(cpu / QTD_NUCLEOS, 2) if cpu is not None else None,
-                "RAM": round(ram, 2) if ram is not None else None,
-                # status vem de psutil.status e descreve estado do processo
-                "Status": (info.get("status") or "").upper(),
-            })
-        except (psutil.NoSuchProcess, psutil.ZombieProcess):
-            # O processo terminou durante a leitura: ignora.
-            continue
+                processos.append({
+                    "PID": info["pid"],
+                    "Nome": info["name"] or "",
+                    "CPU": round(cpu / QTD_NUCLEOS, 2) if cpu is not None else None,
+                    "RAM": round(ram, 2) if ram is not None else None,
+                    # status vem de psutil.status e descreve estado do processo
+                    "Status": (info.get("status") or "").upper(),
+                })
+            except (psutil.NoSuchProcess, psutil.ZombieProcess, PermissionError):
+                # O processo terminou durante a leitura ou acesso negado: ignora.
+                continue
+            except KeyboardInterrupt:
+                return processos
+    except KeyboardInterrupt:
+        return processos
 
     return processos
 
@@ -402,7 +408,7 @@ def main():
 |  \/  |/ _ \| \ | |_   _| ____/ ___| | | |
 | |\/| | | | |  \| | | | |  _|| |   | |_| |
 | |  | | |_| | |\  | | | | |__| |___|  _  |
-|_|  |_\___/|_| \_| |_| |_____\____|_| |_|
+|_|  |_|\___/|_| \_| |_| |_____\____|_| |_|
 
 -------------------------------------------
 """)
@@ -616,6 +622,8 @@ def main():
         last_caminho = None            # último arquivo gerado (para exibir status)
 
         ultimoSegundoExibido = {"valor": None}
+        # flag de parada para shutdown gracioso (setada em KeyboardInterrupt)
+        stop_event = {"stop": False}
 
         def atualizarStatus():
             # Só redesenha a linha quando o contador de segundos muda (1x por segundo),
@@ -681,6 +689,9 @@ def main():
             # Lê agora as métricas dos componentes selecionados (e, se Qtd_Processos
             # estiver selecionado, a lista de processos) e guarda nos buffers.
             nonlocal componentes
+            # se a parada foi solicitada, retorna imediatamente
+            if stop_event.get("stop"):
+                return
             amostra = {}
 
             # Sem componentes selecionados não há o que medir. Em vez de gravar linhas
@@ -732,75 +743,75 @@ def main():
             # Não capturamos processos a cada amostra. A captura de processos
             # ocorre apenas uma vez no final do minuto (implementado em gravarRegistro()).
 
-    def gravarRegistro():
-        # Calcula a média das amostras da janela e grava uma linha em cada CSV.
-        nonlocal componentes, last_caminho, execucoes
-        # Novo comportamento: cada minuto gera 1 arquivo de componentes
-        # com N registros (esperados 6 x 10s) e 1 arquivo de processos
-        agora = datetime.now()
-        timestamp = agora.strftime("%Y-%m-%d %H:%M:%S")
+        def gravarRegistro():
+            # Calcula a média das amostras da janela e grava uma linha em cada CSV.
+            nonlocal componentes, last_caminho, execucoes
+            # alinhamento do timestamp para múltiplos de 10 segundos
+            agora = datetime.now()
+            agora = agora.replace(second=(agora.second // 10) * 10, microsecond=0)
+            timestamp = agora.strftime("%Y-%m-%d %H:%M:%S")
 
-        # Monta o registro (média das amostras da janela)
-        registro = {"TimeStamp": timestamp, "IdAeroporto": idAeroporto}
-        for nomeCodigo in componentes:
-            if nomeCodigo not in COLETORES:
-                continue
-            registro[nomeCodigo] = calcularMedia([amostra.get(nomeCodigo) for amostra in bufferMetricas])
+            # Monta o registro (média das amostras da janela)
+            registro = {"TimeStamp": timestamp, "IdAeroporto": idAeroporto}
+            for nomeCodigo in componentes:
+                if nomeCodigo not in COLETORES:
+                    continue
+                registro[nomeCodigo] = calcularMedia([amostra.get(nomeCodigo) for amostra in bufferMetricas])
 
             # Limpa buffer de amostras (próxima janela começa)
             bufferMetricas.clear()
 
-        # Acumula no buffer do minuto. O fechamento do minuto é baseado no
-        # relógio (cada arquivo representa o minuto do TimeStamp do registro).
-        # Adiciona e decide se fecha o minuto anterior quando necessário.
-        minute_buffer.append(registro)
+            # Acumula no buffer do minuto. O fechamento do minuto é baseado no
+            # relógio (cada arquivo representa o minuto do TimeStamp do registro).
+            minute_buffer.append(registro)
 
-        # Determina minuto do registro atual
-        registro_minuto = datetime.strptime(registro["TimeStamp"], "%Y-%m-%d %H:%M:%S").replace(second=0, microsecond=0)
+            # Determina minuto do registro atual
+            registro_minuto = datetime.strptime(registro["TimeStamp"], "%Y-%m-%d %H:%M:%S").replace(second=0, microsecond=0)
 
-        # Se há um minuto anterior distinto no buffer, fechar esse minuto
-        if len(minute_buffer) >= 2:
-            primeiro_ts = datetime.strptime(minute_buffer[0]["TimeStamp"], "%Y-%m-%d %H:%M:%S").replace(second=0, microsecond=0)
-        else:
-            primeiro_ts = registro_minuto
+            # Se há um minuto anterior distinto no buffer, fechar esse minuto
+            if len(minute_buffer) >= 2:
+                primeiro_ts = datetime.strptime(minute_buffer[0]["TimeStamp"], "%Y-%m-%d %H:%M:%S").replace(second=0, microsecond=0)
+            else:
+                primeiro_ts = registro_minuto
 
-        arquivosDoRegistro = []
+            arquivosDoRegistro = []
 
-        # Caso 1: registramos 6 (esperados) para o minuto atual -> fechar
-        if registro_minuto == primeiro_ts and len(minute_buffer) >= (60 // INTERVALO_REGISTRO_SEGUNDOS):
-            resultado = fechar_minuto(
-                minute_buffer[:],
-                tokenServidor,
-                PASTA_CSVS,
-                idAeroporto,
-                qtd_processos_selected=("Qtd_Processos" in componentes),
-            )
-            arquivosDoRegistro.extend(resultado.get("files", []))
-            for f in resultado.get("failed", []):
-                arquivosPendentes.add(f)
-            last_caminho = arquivosDoRegistro[0] if arquivosDoRegistro else last_caminho
-            minute_buffer.clear()
+            # Caso 1: registramos 6 (esperados) para o minuto atual -> fechar
+            if registro_minuto == primeiro_ts and len(minute_buffer) >= (60 // INTERVALO_REGISTRO_SEGUNDOS):
+                resultado = fechar_minuto(
+                    minute_buffer[:],
+                    tokenServidor,
+                    PASTA_CSVS,
+                    idAeroporto,
+                    qtd_processos_selected=("Qtd_Processos" in componentes),
+                )
+                arquivosDoRegistro.extend(resultado.get("files", []))
+                for f in resultado.get("failed", []):
+                    arquivosPendentes.add(f)
+                last_caminho = arquivosDoRegistro[0] if arquivosDoRegistro else last_caminho
+                minute_buffer.clear()
+                execucoes += 1
 
-        # Caso 2: o registro pertence a outro minuto (avanço do relógio) -> fechar
-        elif registro_minuto != primeiro_ts:
-            # fecha o minuto acumulado (pode ser parcial)
-            resultado = fechar_minuto(
-                [r for r in minute_buffer[:-1]],
-                tokenServidor,
-                PASTA_CSVS,
-                idAeroporto,
-                qtd_processos_selected=("Qtd_Processos" in componentes),
-            )
-            arquivosDoRegistro.extend(resultado.get("files", []))
-            for f in resultado.get("failed", []):
-                arquivosPendentes.add(f)
-            # preserva apenas o registro do novo minuto no buffer
-            minute_buffer[:] = [minute_buffer[-1]]
-            last_caminho = arquivosDoRegistro[0] if arquivosDoRegistro else last_caminho
+            # Caso 2: o registro pertence a outro minuto (avanço do relógio) -> fechar
+            elif registro_minuto != primeiro_ts:
+                # fecha o minuto acumulado (pode ser parcial)
+                resultado = fechar_minuto(
+                    [r for r in minute_buffer[:-1]],
+                    tokenServidor,
+                    PASTA_CSVS,
+                    idAeroporto,
+                    qtd_processos_selected=("Qtd_Processos" in componentes),
+                )
+                arquivosDoRegistro.extend(resultado.get("files", []))
+                for f in resultado.get("failed", []):
+                    arquivosPendentes.add(f)
+                # preserva apenas o registro do novo minuto no buffer
+                minute_buffer[:] = [minute_buffer[-1]]
+                last_caminho = arquivosDoRegistro[0] if arquivosDoRegistro else last_caminho
 
-            execucoes += 1
+                execucoes += 1
 
-
+        # Loop principal de coleta
         try:
             # Aquece a leitura de CPU por processo (a 1ª chamada sempre retorna 0)
             if "Qtd_Processos" in componentes:
@@ -828,6 +839,11 @@ def main():
                 if len(bufferMetricas) >= AMOSTRAS_POR_REGISTRO:
                     gravarRegistro()
         except KeyboardInterrupt:
+            # sinaliza parada para que funções longas retornem rapidamente
+            try:
+                stop_event["stop"] = True
+            except Exception:
+                pass
             # Ao encerrar, grava qualquer minute_buffer parcial usando fechar_minuto
             if minute_buffer:
                 resultado = fechar_minuto(
@@ -856,6 +872,7 @@ def main():
                 f"\nMonitoramento encerrado. Registros salvos: {execucoes}.",
                 flush=True,
             )
+
 
 
 if __name__ == "__main__":
