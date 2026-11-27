@@ -86,7 +86,7 @@ def lambda_handler(event, context):
             series = series_for_day(df_day, aeroporto=aeroporto, servidor=token, date_local=date_local)
 
             # merge with existing series file if exists
-            series_key = f"{prefixo_gold}/series/{aeroporto}/{token}/{date_local}.json"
+            series_key = f"{prefixo_gold}/series/{empresa}/{aeroporto}/{token}/{date_local}.json"
             existing = None
             try:
                 resp = s3.get_object(Bucket=bucket, Key=series_key)
@@ -121,12 +121,12 @@ def lambda_handler(event, context):
             last_ts = df_day['TimeStamp'].max()
             referencia_ms = int(last_ts.tz_convert('UTC').timestamp() * 1000)
             diagnostico = diagnostico_from_series(merged, referencia_ms)
-            diag_key = f"{prefixo_gold}/diagnostico/{aeroporto}/{token}.json"
+            diag_key = f"{prefixo_gold}/diagnostico/{empresa}/{aeroporto}/{token}.json"
             _s3_put_json(bucket, diag_key, diagnostico)
 
         # atual snapshot (use full df, ultimaColeta is last ts)
         atual = atual_from_df(df)
-        atual_key = f"{prefixo_gold}/atual/{aeroporto}/{token}.json"
+        atual_key = f"{prefixo_gold}/atual/{empresa}/{aeroporto}/{token}.json"
         _s3_put_json(bucket, atual_key, atual)
 
         # processes: try to read processes-silver JSON in same folder as components
@@ -141,7 +141,7 @@ def lambda_handler(event, context):
 
         if processes:
             proc_obj = processos_from_list(processes)
-            proc_key = f"{prefixo_gold}/processos/{aeroporto}/{token}.json"
+            proc_key = f"{prefixo_gold}/processos/{empresa}/{aeroporto}/{token}.json"
             _s3_put_json(bucket, proc_key, proc_obj)
 
         results.append({'silver': key})

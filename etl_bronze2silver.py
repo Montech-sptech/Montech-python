@@ -218,9 +218,11 @@ def bronze_to_silver(bronze_components_path: str, silver_root: str, expected_rec
         silver_dir = os.path.join(silver_root)
     os.makedirs(silver_dir, exist_ok=True)
 
-    sufixo_minuto = minuto.strftime("%Y-%m-%d-%H-%M")
-    token = os.path.basename(os.path.dirname(os.path.dirname(bronze_components_path)))
-    comp_name = f"{token}-{sufixo_minuto}-components-silver.csv"
+    # Use the same filename base as the bronze file so the silver path
+    # mirrors the bronze route (only the prefix changes: 01-bronze -> 02-silver).
+    bronze_basename = os.path.basename(bronze_components_path)
+    # Keep the same basename for the silver components file
+    comp_name = bronze_basename
     caminho_components_silver = os.path.join(silver_dir, comp_name)
 
     # formata TimeStamp de volta para string
@@ -234,8 +236,9 @@ def bronze_to_silver(bronze_components_path: str, silver_root: str, expected_rec
     proc_glob = os.path.join(dir_bronze, os.path.basename(bronze_components_path).replace('-components.csv', '-processos.csv'))
     if os.path.exists(proc_glob):
         dfp = pd.read_csv(proc_glob, sep=';', dtype=str, encoding='utf-8')
-        # grava processes como JSON no silver
-        proc_name = f"{token}-{sufixo_minuto}-processos-silver.json"
+        # grava processes como JSON no silver, mantendo o mesmo base name (mudando só a extensão para .json)
+        proc_basename = os.path.basename(proc_glob)
+        proc_name = proc_basename.rsplit('.csv', 1)[0] + '.json'
         caminho_processos_silver = os.path.join(silver_dir, proc_name)
         # converte para lista de dicts
         lista = dfp.fillna('').to_dict(orient='records')

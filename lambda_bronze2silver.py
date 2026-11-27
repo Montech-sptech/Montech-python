@@ -41,9 +41,11 @@ def lambda_handler(event, context):
 
         empresa, aeroporto, token = identificar_destino(key)
 
-        # download bronze object to /tmp
-        _, fname = os.path.split(key)
-        local_br = os.path.join(tempfile.gettempdir(), fname)
+        # download bronze object to /tmp, preserving the S3 key path so
+        # bronze_to_silver can reconstruct the same prefix structure.
+        parts = key.split('/')
+        local_br = os.path.join(tempfile.gettempdir(), *parts)
+        os.makedirs(os.path.dirname(local_br), exist_ok=True)
         obj = s3.get_object(Bucket=bucket, Key=key)
         with open(local_br, 'wb') as f:
             f.write(obj['Body'].read())
